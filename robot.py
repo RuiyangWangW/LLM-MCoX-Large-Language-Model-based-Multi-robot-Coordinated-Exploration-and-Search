@@ -162,7 +162,7 @@ class Robot:
         position: Tuple[int, int],
         orientation: float = 0.0,
         sensor_fov: float = np.pi / 3,  # Field of view in radians (60 degrees)
-        sensor_range: int = 30,  # Range in grid cells
+        sensor_range: int = 10,  # Range in grid cells
         map_size: Optional[Tuple[int, int]] = None
 
     ):
@@ -366,7 +366,7 @@ class Robot:
         """
         Update local map based on sensor observation of ground truth map.
 
-        In addition to sensor FoV, robot always knows a 5-cell radius around itself.
+        In addition to sensor FoV, robot always knows a 2-cell radius around itself.
         This prevents the robot's position from becoming a frontier.
 
         Args:
@@ -375,9 +375,9 @@ class Robot:
         if self.local_map is None:
             self.initialize_local_map(ground_truth_map.shape)
 
-        # First, mark a 5-cell radius around robot as known
+        # First, mark a 2-cell radius around robot as known
         # This ensures robot's immediate area is observed
-        GUARANTEED_RADIUS = 5
+        GUARANTEED_RADIUS = 2
         robot_z, robot_x = self.position
 
         for dz in range(-GUARANTEED_RADIUS, GUARANTEED_RADIUS + 1):

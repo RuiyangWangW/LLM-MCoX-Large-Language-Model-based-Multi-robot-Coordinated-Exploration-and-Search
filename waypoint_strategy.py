@@ -167,6 +167,69 @@ class LLMStrategy(WaypointStrategy):
         self.previous_plan_summary = None
 
 
+class LLMWaypointStrategy(WaypointStrategy):
+    """
+    GPT-4o centralized planner for multi-robot exploration / search.
+
+    Wrapper for llm_strategy.LLMStrategy.
+
+    Ablation flags:
+    - use_vis:          Include aggregated map image in the LLM prompt.
+    - use_plan_summary: Include the previous round's plan summary.
+    - use_prior_info:   Include a natural-language environment description.
+    """
+
+    def __init__(
+        self,
+        T_coord: int = 20,
+        mission: str = "explore",
+        model: str = "gpt-4o",
+        max_cluster_distance: int = 10,
+        use_vis: bool = True,
+        use_plan_summary: bool = True,
+        use_prior_info: bool = True,
+        prior_info=None,  # str | dict[str, str] | None
+    ):
+        super().__init__(replan_interval=1)  # LLMStrategy manages timing via T_coord
+
+        self.T_coord = T_coord
+
+        from llm_strategy import LLMStrategy
+
+        self.llm = LLMStrategy(
+            T_coord=T_coord,
+            mission=mission,
+            model=model,
+            max_cluster_distance=max_cluster_distance,
+            use_vis=use_vis,
+            use_plan_summary=use_plan_summary,
+            use_prior_info=use_prior_info,
+            prior_info=prior_info,
+        )
+
+    def assign_waypoints(
+        self,
+        robots: List,
+        step_count: int,
+        **kwargs
+    ) -> Dict[int, List[Tuple[int, int]]]:
+        try:
+            waypoints = self.llm.assign_waypoints(robots, step_count)
+            if waypoints is None:
+                print(f"[ERROR] LLM returned None at step {step_count}")
+                return {}
+            return waypoints
+        except Exception as e:
+            print(f"[ERROR] LLM exception at step {step_count}: {e}")
+            import traceback
+            traceback.print_exc()
+            return {}
+
+    def reset(self):
+        super().reset()
+        self.llm.reset()
+
+
 class RacerWaypointStrategy(WaypointStrategy):
     """
     RACER (Rapid Adaptive Coverage Exploration for Robots) strategy.

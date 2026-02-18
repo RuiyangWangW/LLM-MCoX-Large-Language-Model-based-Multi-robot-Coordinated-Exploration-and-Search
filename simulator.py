@@ -258,7 +258,7 @@ class GridMapSimulator:
                 position=pos,
                 orientation=float(np.random.uniform(-np.pi, np.pi)),
                 sensor_fov=np.pi / 3,
-                sensor_range=30,
+                sensor_range=10,
                 map_size=map_size
             )
             r.update_local_map(self.occupancy_map)
@@ -311,8 +311,6 @@ class GridMapSimulator:
         if self.occupancy_map is None:
             raise ValueError("Load a scene first")
 
-        self.step_count += 1
-
         # Collect all robot positions for collision avoidance
         all_pos = [tuple(map(int, r.position)) for r in self.robots]
 
@@ -352,7 +350,8 @@ class GridMapSimulator:
                 print(
                     f"[WARN] Waypoint assignment failed at step {self.step_count}: {e}"
                 )
-
+        
+        self.step_count += 1
     # ======================================================
     # Visualization
     # ======================================================

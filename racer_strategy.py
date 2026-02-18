@@ -987,16 +987,6 @@ class RacerStrategy:
 
         return self._solve_open_tsp(occ, robot_pos_xy, end_xy, robot_yaw, reps)
 
-    def _cp_guided_candidates(self, all_frontiers: List[dict], cells_cp: List[HGridCell]) -> List[dict]:
-        if not cells_cp:
-            return []
-        ncp = cells_cp[: self.ncp_k]
-        cands = [f for f in all_frontiers if self._frontier_in_cells(f, ncp)]
-        if cands:
-            return cands
-        # Expand to full CP if NCP empty
-        return [f for f in all_frontiers if self._frontier_in_cells(f, cells_cp)]
-
     # -------------------------------------------------
     # Main entry point
     # -------------------------------------------------
@@ -1217,16 +1207,14 @@ class RacerStrategy:
             # -------------------------------------------------
             # 2) Normal CP-guided replanning
             # -------------------------------------------------
-            cands = self._cp_guided_candidates(frontiers, cells_cp)
 
+            cands = self._cp_guided_plan_waypoints(
+                occ=occ,
+                robot_pos_xy=robots[ridx].position,
+                robot_yaw=robots[ridx].orientation,
+                cells_cp=cells_cp,
+                all_frontiers=frontiers,
+            )
             if cands:
-                # Choose nearest frontier inside CP (greedy, no TSP)
-                robot_xy = robots[ridx].position
-                nearest = min(
-                    cands,
-                    key=lambda f: np.linalg.norm(
-                        np.array(f["rep"]) - np.array(robot_xy)
-                    )
-                )
-                waypoints[ridx] = [nearest["rep"]]
+                waypoints[ridx] = list(cands)
         return waypoints
