@@ -4,7 +4,6 @@ LLM-based Centralized Waypoint Planning Strategy
 Uses GPT-4o as a centralized planner that:
 1. Receives an aggregated map visualization (image) + structured text context
 2. Outputs a plan summary and per-robot waypoint lists as (row, col) grid coordinates
-3. Applies 2-opt TSP to order each robot's assigned waypoints
 
 The LLM outputs grid coordinates directly — not frontier cluster IDs.
 Frontier clusters are provided as candidate suggestions in the prompt, but the
@@ -30,7 +29,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
 
-from hungarian_strategy import extract_frontier_clusters, solve_tsp_2opt
+from hungarian_strategy import extract_frontier_clusters
 
 
 # ---------------------------------------------------------------------------
@@ -42,11 +41,10 @@ You are coordinating a team of {n} robots exploring an unknown environment \
 represented as a 2-D grid (row, col).
 MISSION: Exploration — cover as much of the map as possible as efficiently as possible.
 For each robot, output an ordered list of (row, col) grid waypoints to visit.
-Use the suggested frontier positions as targets but feel free to add or move \
-waypoints to improve coverage.
-If a image is provided, use it to identify promising unexplored regions and plan efficient routes.
-If a task prior is provided, use it to guide the exploration.
+Use the suggested frontier positions as targets and prefer frontiers with larger sizebut feel free to add or move \
+waypoints to improve coverage based on the attached image map.
 Spread robots across different regions; avoid assigning the same position to multiple robots.
+Never assign waypoints that are already known to be free or occupied; focus on the unknown parts of the map!
 """
 
 SEARCH_TEMPLATE = """\
@@ -54,11 +52,11 @@ You are coordinating a team of {n} robots searching an unknown environment \
 represented as a 2-D grid (row, col) for a hidden target.
 MISSION: Search — find the target as quickly as possible.
 For each robot, output an ordered list of (row, col) grid waypoints to visit.
-Use the suggested frontier positions as a starting point, but feel free to add or move \
-waypoints to improve coverage.
-If a image is provided, use it to identify promising unexplored regions and plan efficient routes.
-If a task prior is provided, use it to guide the search.
-Spread robots across different regions; avoid assigning the same position to multiple robots."""
+Use the suggested frontier positions as a starting point and prefer frontiers with larger size, but feel free to add or move \
+waypoints to improve coverage based on the attached image map.
+Spread robots across different regions; avoid assigning the same position to multiple robots.
+Never assign waypoints that are already known to be free or occupied; focus on the unknown parts of the map!
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -261,16 +259,16 @@ def _build_messages(
         for rid in robot_id_list
     )
     output_instruction = f"""\
-Grid size: {H} rows × {W} cols.  Coordinates are (row, col), both 0-indexed.
-Respond with a single JSON object — no markdown, no extra text:
-{{
-  "plan_summary": "<one or two sentences describing your plan>",
-  "assignments": {{
-{schema_rows}
-  }}
-}}
-Each waypoint must be a valid [row, col] pair within the grid.
-Assign 2–6 waypoints per robot. Do not assign the same position to multiple robots."""
+    Grid size: {H} rows × {W} cols.  Coordinates are (row, col), both 0-indexed.
+    Respond with a single JSON object — no markdown, no extra text:
+    {{
+    "plan_summary": "<Describe your plan concisely for each robot.>",
+    "assignments": {{
+    {schema_rows}
+    }}
+    }}
+    Each waypoint must be a valid [row, col] pair within the grid.
+    Assign 2–6 waypoints per robot. Do not assign the same position to multiple robots."""
 
     text_body = (
         mission_text
@@ -314,7 +312,6 @@ class LLMStrategy:
 
     The LLM receives frontier cluster positions as suggestions but outputs
     (row, col) grid coordinates directly as waypoints for each robot.
-    A 2-opt TSP pass then orders each robot's waypoints optimally.
 
     Parameters
     ----------
@@ -402,7 +399,6 @@ class LLMStrategy:
           3. Optionally render the aggregated map image
           4. Call GPT-4o — receives image (optional) + text prompt
           5. Parse (row, col) waypoint lists from JSON response
-          6. Apply 2-opt TSP to order each robot's waypoints
           7. Return {robot_id: [(row, col), ...]}
 
         Between coordination steps, returns {} so robots keep existing waypoints.
@@ -472,14 +468,11 @@ class LLMStrategy:
         print(f"[LLM] Plan summary: {plan_summary}")
         print(f"[LLM] Assignments:  {assignments}")
 
-        # 6. 2-opt TSP ordering per robot
         for rid, wps in assignments.items():
             if not wps:
                 continue
             pts   = [np.array(wp, dtype=float) for wp in wps]
-            start = np.array(robots[rid].position, dtype=float)
-            route = solve_tsp_2opt(start, pts)
-            waypoints[rid] = [(int(round(p[0])), int(round(p[1]))) for p in route]
+            waypoints[rid] = [(int(round(p[0])), int(round(p[1]))) for p in pts]
 
         self.initialized = True
         print(f"[LLM] Final waypoints at step {step_count}: {waypoints}")
