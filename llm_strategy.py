@@ -22,6 +22,10 @@ import base64
 import io
 import json
 from typing import Dict, List, Optional, Tuple
+import os
+from datetime import datetime
+from scipy.ndimage import distance_transform_edt
+from skimage.morphology import skeletonize
 
 import matplotlib
 matplotlib.use("Agg")
@@ -41,8 +45,10 @@ You are coordinating a team of {n} robots exploring an unknown environment \
 represented as a 2-D grid (row, col).
 MISSION: Exploration — cover as much of the map as possible as efficiently as possible.
 For each robot, output an ordered list of (row, col) grid waypoints to visit.
-Use the suggested frontier positions as targets and prefer frontiers with larger sizebut feel free to add or move \
-waypoints to improve coverage based on the attached image map.
+Use the suggested frontier positions as targets and prefer frontiers with larger size but feel free to add or move \
+waypoints to improve coverage based on the attached image map if available. 
+The bright yellow lines represent the structural backbone (medial axis) of connected free space.
+They highlight corridor centerlines and branching junctions, which are rooms.
 Spread robots across different regions; avoid assigning the same position to multiple robots.
 Never assign waypoints that are already known to be free or occupied; focus on the unknown parts of the map!
 """
@@ -53,7 +59,10 @@ represented as a 2-D grid (row, col) for a hidden target.
 MISSION: Search — find the target as quickly as possible.
 For each robot, output an ordered list of (row, col) grid waypoints to visit.
 Use the suggested frontier positions as a starting point and prefer frontiers with larger size, but feel free to add or move \
-waypoints to improve coverage based on the attached image map.
+waypoints to improve coverage based on the attached image map if available.
+The bright yellow lines represent the structural backbone (medial axis) of connected free space.
+They highlight corridor centerlines and branching junctions, which are rooms.
+If task prior information provided, prioritize the areas accordingly and assign waypoints to it based on the image map and your guess.
 Spread robots across different regions; avoid assigning the same position to multiple robots.
 Never assign waypoints that are already known to be free or occupied; focus on the unknown parts of the map!
 """
@@ -68,6 +77,18 @@ ROBOT_COLORS = [
     "#911eb4", "#42d4f4", "#f032e6", "#bfef45",
     "#fabed4", "#469990",
 ]
+
+def save_debug_image(png_bytes, prefix="llm_input"):
+    os.makedirs("debug_images", exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    filename = f"debug_images/{prefix}_{timestamp}.png"
+
+    with open(filename, "wb") as f:
+        f.write(png_bytes)
+
+    print(f"[DEBUG] Saved image to {filename}")
+    return filename
 
 
 def build_map_image(robots, frontier_clusters: List[Dict]) -> bytes:
@@ -91,8 +112,16 @@ def build_map_image(robots, frontier_clusters: List[Dict]) -> bytes:
     rgb[agg == -1] = [0.35, 0.35, 0.35]
     rgb[agg ==  0] = [1.00, 1.00, 1.00]
     rgb[agg ==  1] = [0.10, 0.10, 0.10]
+    # ---------------------------------------------------------
+    # Skeleton overlay (exposes corridor backbone)
+    # ---------------------------------------------------------
+    free_mask = (agg == 0)
+    if np.sum(free_mask) > 0:
+        skeleton = skeletonize(free_mask)
 
-    fig, ax = plt.subplots(figsize=(7, 7))
+    # Subtle yellow backbone
+    rgb[skeleton] = np.array([1.0, 0.85, 0.0])  # strong yellow
+    fig, ax = plt.subplots(figsize=(5, 5), dpi=200)
     ax.imshow(rgb, origin="lower")
 
     # Frontier cluster markers — label with (row, col) so the LLM can read coords
@@ -117,15 +146,16 @@ def build_map_image(robots, frontier_clusters: List[Dict]) -> bytes:
 
     ax.legend(handles=legend_patches, loc="upper right",
               fontsize=6, framealpha=0.7)
-    ax.set_title("Aggregated Local Map  (row increases upward, col rightward)",
+    ax.set_title("Aggregated Local Map  (row increases downward, col rightward)",
                  fontsize=8)
     ax.axis("off")
     plt.tight_layout(pad=0.5)
 
     buf = io.BytesIO()
-    plt.savefig(buf, format="png", dpi=120, bbox_inches="tight")
+    plt.savefig(buf, format="png", dpi=200, bbox_inches="tight")
     buf.seek(0)
     png_bytes = buf.read()
+    #save_debug_image(png_bytes, prefix="aggregated_map")
     buf.close()
     plt.close(fig)
     return png_bytes
@@ -289,7 +319,7 @@ def _build_messages(
                         "type": "image_url",
                         "image_url": {
                             "url": f"data:image/png;base64,{b64}",
-                            "detail": "low",
+                            "detail": "auto",
                         },
                     },
                     {"type": "text", "text": text_body},
