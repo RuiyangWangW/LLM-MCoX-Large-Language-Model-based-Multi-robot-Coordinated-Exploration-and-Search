@@ -3,7 +3,7 @@ LLM-based Centralized Waypoint Planning Strategy
 
 Uses GPT-4o as a centralized planner that:
 1. Receives an aggregated map visualization (image) + structured text context
-2. Outputs a plan summary and per-robot waypoint lists as (row, col) grid coordinates
+2. Outputs per-robot waypoint lists as (row, col) grid coordinates
 
 The LLM outputs grid coordinates directly — not frontier cluster IDs.
 Frontier clusters are provided as candidate suggestions in the prompt, but the
@@ -11,7 +11,8 @@ LLM is free to output any valid (row, col) position on the map.
 
 Ablation flags:
 - use_vis:          Include the aggregated map image in the LLM input
-- use_plan_summary: Include the previous round's plan summary in the input
+- use_skeleton:     Include skeleton (medial axis) overlay in the map visualization
+- use_frontiers:    Include frontier cluster information (text + visualization markers)
 - use_prior_info:   Include a natural-language description of the environment
 
 Replan interval (T_coord) controls how often the LLM is called.
@@ -45,10 +46,7 @@ You are coordinating a team of {n} robots exploring an unknown environment \
 represented as a 2-D grid (row, col).
 MISSION: Exploration — cover as much of the map as possible as efficiently as possible.
 For each robot, output an ordered list of (row, col) grid waypoints to visit.
-Use the suggested frontier positions as targets and prefer frontiers with larger size but feel free to add or move \
-waypoints to improve coverage based on the attached image map if available. 
-The bright yellow lines represent the structural backbone (medial axis) of connected free space.
-They highlight corridor centerlines and branching junctions, which are rooms.
+Use the suggested frontier positions and assign waypoints towards frontiers with larger size based on the attached image map if available.{skeleton_hint}
 Spread robots across different regions; avoid assigning the same position to multiple robots.
 Never assign waypoints that are already known to be free or occupied; focus on the unknown parts of the map!
 """
@@ -58,10 +56,7 @@ You are coordinating a team of {n} robots searching an unknown environment \
 represented as a 2-D grid (row, col) for a hidden target.
 MISSION: Search — find the target as quickly as possible.
 For each robot, output an ordered list of (row, col) grid waypoints to visit.
-Use the suggested frontier positions as a starting point and prefer frontiers with larger size, but feel free to add or move \
-waypoints to improve coverage based on the attached image map if available.
-The bright yellow lines represent the structural backbone (medial axis) of connected free space.
-They highlight corridor centerlines and branching junctions, which are rooms.
+Use the suggested frontier positions and assign waypoints towards frontiers with larger size based on the attached image map if available.{skeleton_hint}
 If task prior information provided, prioritize the areas accordingly and assign waypoints to it based on the image map and your guess.
 Spread robots across different regions; avoid assigning the same position to multiple robots.
 Never assign waypoints that are already known to be free or occupied; focus on the unknown parts of the map!
@@ -91,17 +86,32 @@ def save_debug_image(png_bytes, prefix="llm_input"):
     return filename
 
 
-def build_map_image(robots, frontier_clusters: List[Dict]) -> bytes:
+def build_map_image(robots, frontier_clusters: List[Dict], use_skeleton: bool = True, use_frontiers: bool = True) -> bytes:
     """
     Render the aggregated local map with per-robot colours and frontier markers.
 
     - Dark gray  = unknown
     - White      = free
     - Near-black = wall
-    - Cyan dots  = frontier cluster representative positions (row, col labelled)
+    - Cyan dots  = frontier cluster representative positions (row, col labelled) (if use_frontiers=True)
     - Coloured circles = robots (labelled R0, R1, …)
+    - Yellow lines = skeleton (medial axis) overlay (if use_skeleton=True)
 
-    Returns PNG bytes suitable for base64 encoding.
+    Parameters
+    ----------
+    robots : list
+        List of robot objects with local_map and position attributes.
+    frontier_clusters : list
+        List of frontier cluster dictionaries.
+    use_skeleton : bool
+        Whether to include skeleton (medial axis) overlay in the visualization.
+    use_frontiers : bool
+        Whether to include frontier cluster markers in the visualization.
+
+    Returns
+    -------
+    bytes
+        PNG bytes suitable for base64 encoding.
     """
     agg = robots[0].local_map.copy()
     for r in robots[1:]:
@@ -112,24 +122,27 @@ def build_map_image(robots, frontier_clusters: List[Dict]) -> bytes:
     rgb[agg == -1] = [0.35, 0.35, 0.35]
     rgb[agg ==  0] = [1.00, 1.00, 1.00]
     rgb[agg ==  1] = [0.10, 0.10, 0.10]
-    # ---------------------------------------------------------
-    # Skeleton overlay (exposes corridor backbone)
-    # ---------------------------------------------------------
-    free_mask = (agg == 0)
-    if np.sum(free_mask) > 0:
-        skeleton = skeletonize(free_mask)
 
-    # Subtle yellow backbone
-    rgb[skeleton] = np.array([1.0, 0.85, 0.0])  # strong yellow
+    # ---------------------------------------------------------
+    # Skeleton overlay (exposes corridor backbone) - optional
+    # ---------------------------------------------------------
+    if use_skeleton:
+        free_mask = (agg == 0)
+        if np.sum(free_mask) > 0:
+            skeleton = skeletonize(free_mask)
+            # Strong yellow backbone
+            rgb[skeleton] = np.array([1.0, 0.85, 0.0])
+
     fig, ax = plt.subplots(figsize=(5, 5), dpi=200)
     ax.imshow(rgb, origin="lower")
 
-    # Frontier cluster markers — label with (row, col) so the LLM can read coords
-    for cluster in frontier_clusters:
-        rr, cc = cluster["rep"]
-        ax.plot(cc, rr, "c^", markersize=5, zorder=3)
-        ax.text(cc + 1, rr + 1, f"({rr},{cc})",
-                color="cyan", fontsize=5, zorder=4)
+    # Frontier cluster markers — label with (row, col) so the LLM can read coords (if use_frontiers=True)
+    if use_frontiers:
+        for cluster in frontier_clusters:
+            rr, cc = cluster["rep"]
+            ax.plot(cc, rr, "c^", markersize=5, zorder=3)
+            ax.text(cc + 1, rr + 1, f"({rr},{cc})",
+                    color="cyan", fontsize=5, zorder=4)
 
     # Robot markers
     legend_patches = []
@@ -186,13 +199,12 @@ def _parse_llm_response(
     text: str,
     num_robots: int,
     map_shape: Tuple[int, int],
-) -> Tuple[str, Dict[int, List[Tuple[int, int]]]]:
+) -> Dict[int, List[Tuple[int, int]]]:
     """
-    Parse the LLM JSON response into (plan_summary, {robot_id: [(row, col), ...]}).
+    Parse the LLM JSON response into {robot_id: [(row, col), ...]}.
 
     Expected JSON schema:
     {
-      "plan_summary": "...",
       "assignments": {
         "0": [[row, col], [row, col], ...],
         "1": [[row, col], ...],
@@ -212,7 +224,6 @@ def _parse_llm_response(
 
     data = json.loads(text[start:end])
 
-    plan_summary    = data.get("plan_summary", "")
     raw_assignments = data.get("assignments", {})
 
     H, W = map_shape
@@ -233,7 +244,7 @@ def _parse_llm_response(
                 valid.append((r, c))
         assignments[rid] = valid
 
-    return plan_summary, assignments
+    return assignments
 
 
 # ---------------------------------------------------------------------------
@@ -245,30 +256,35 @@ def _build_messages(
     frontier_clusters: List[Dict],
     map_shape: Tuple[int, int],
     mission: str,
+    use_skeleton: bool,
+    use_frontiers: bool,
     use_prior_info: bool,
     prior_info: str,
-    use_plan_summary: bool,
-    previous_plan_summary: Optional[str],
     png_bytes: Optional[bytes],
 ) -> List[Dict]:
     """Assemble the OpenAI messages list."""
     num_robots = len(robots)
     H, W = map_shape
 
+    # Skeleton hint (only included if there's an image AND use_skeleton is True)
+    skeleton_hint = ""
+    if png_bytes is not None and use_skeleton:
+        skeleton_hint = (
+            "Robots should prioritize:\n"
+            "1. Junction nodes in the skeleton (room entrances) lead to frontiers\n"
+            "2. Separate branches among robots to reduce overlap"
+        )
+
     # Mission template
     if mission == "explore":
-        mission_text = EXPLORE_TEMPLATE.format(n=num_robots)
+        mission_text = EXPLORE_TEMPLATE.format(n=num_robots, skeleton_hint=skeleton_hint)
     else:
-        mission_text = SEARCH_TEMPLATE.format(n=num_robots)
+        mission_text = SEARCH_TEMPLATE.format(n=num_robots, skeleton_hint=skeleton_hint)
 
     # Optional blocks
     prior_block = ""
     if use_prior_info and prior_info:
         prior_block = f"\nEnvironment description:\n{prior_info}\n"
-
-    summary_block = ""
-    if use_plan_summary and previous_plan_summary:
-        summary_block = f"\nPrevious plan summary:\n{previous_plan_summary}\n"
 
     # Robot positions
     robot_lines = "\n".join(
@@ -276,11 +292,14 @@ def _build_messages(
         for i, r in enumerate(robots)
     )
 
-    # Frontier cluster suggestions (rep positions + size, no IDs)
-    frontier_lines = "\n".join(
-        f"  ({c['rep'][0]}, {c['rep'][1]})  [{c['size']} cells]"
-        for c in frontier_clusters
-    )
+    # Frontier cluster suggestions (only included if use_frontiers is True)
+    frontier_block = ""
+    if use_frontiers:
+        frontier_lines = "\n".join(
+            f"  ({c['rep'][0]}, {c['rep'][1]})  [{c['size']} cells]"
+            for c in frontier_clusters
+        )
+        frontier_block = f"\nFrontier positions (row, col) [cluster size]:\n{frontier_lines}\n"
 
     # Output schema
     robot_id_list = list(range(num_robots))
@@ -292,20 +311,21 @@ def _build_messages(
     Grid size: {H} rows × {W} cols.  Coordinates are (row, col), both 0-indexed.
     Respond with a single JSON object — no markdown, no extra text:
     {{
-    "plan_summary": "<Describe your plan concisely for each robot.>",
     "assignments": {{
     {schema_rows}
     }}
     }}
     Each waypoint must be a valid [row, col] pair within the grid.
-    Assign 2–6 waypoints per robot. Do not assign the same position to multiple robots."""
+    Waypoints foreach robot must form a spatially coherent path.
+    Consecutive waypoints should lie along the same corridor or branch.
+    Avoid jumping between disconnected regions."""
 
     text_body = (
         mission_text
         + prior_block
-        + summary_block
         + f"\nRobot positions (row, col):\n{robot_lines}\n"
-        + f"\nSuggested frontier positions (row, col) [cluster size]:\n{frontier_lines}\n\n"
+        + frontier_block
+        + "\n"
         + output_instruction
     )
 
@@ -319,7 +339,7 @@ def _build_messages(
                         "type": "image_url",
                         "image_url": {
                             "url": f"data:image/png;base64,{b64}",
-                            "detail": "auto",
+                            "detail": "high",
                         },
                     },
                     {"type": "text", "text": text_body},
@@ -355,8 +375,10 @@ class LLMStrategy:
         BFS depth limit for frontier clustering used to build suggestions.
     use_vis : bool
         Include the aggregated map image in the LLM prompt.
-    use_plan_summary : bool
-        Include the previous round's plan summary for consistency.
+    use_skeleton : bool
+        Include skeleton (medial axis) overlay in the map visualization.
+    use_frontiers : bool
+        Include frontier cluster information (text + visualization markers).
     use_prior_info : bool
         Include a natural-language environment description.
     prior_info : str or dict
@@ -377,7 +399,8 @@ class LLMStrategy:
         model: str = "gpt-4o",
         max_cluster_distance: int = 10,
         use_vis: bool = True,
-        use_plan_summary: bool = True,
+        use_skeleton: bool = True,
+        use_frontiers: bool = True,
         use_prior_info: bool = True,
         prior_info=None,   # str | dict[str, str] | None
     ):
@@ -386,13 +409,13 @@ class LLMStrategy:
         self.model = model
         self.max_cluster_distance = max_cluster_distance
         self.use_vis = use_vis
-        self.use_plan_summary = use_plan_summary
+        self.use_skeleton = use_skeleton
+        self.use_frontiers = use_frontiers
         self.use_prior_info = use_prior_info
         # Resolve to the mission-appropriate string once at init time
         self.prior_info = self._resolve_prior_info(prior_info, mission)
 
         self.initialized: bool = False
-        self.previous_plan_summary: Optional[str] = None
 
     @staticmethod
     def _resolve_prior_info(prior_info, mission: str) -> str:
@@ -405,7 +428,6 @@ class LLMStrategy:
 
     def reset(self):
         self.initialized = False
-        self.previous_plan_summary = None
 
     def _fuse_maps(self, robots) -> np.ndarray:
         fused = robots[0].local_map.copy()
@@ -459,7 +481,7 @@ class LLMStrategy:
         png_bytes = None
         if self.use_vis:
             try:
-                png_bytes = build_map_image(robots, frontier_clusters)
+                png_bytes = build_map_image(robots, frontier_clusters, use_skeleton=self.use_skeleton, use_frontiers=self.use_frontiers)
             except Exception as e:
                 print(f"[WARN] Map image rendering failed: {e}")
 
@@ -469,10 +491,10 @@ class LLMStrategy:
             frontier_clusters=frontier_clusters,
             map_shape=map_shape,
             mission=self.mission,
+            use_skeleton=self.use_skeleton,
+            use_frontiers=self.use_frontiers,
             use_prior_info=self.use_prior_info,
             prior_info=self.prior_info,
-            use_plan_summary=self.use_plan_summary,
-            previous_plan_summary=self.previous_plan_summary,
             png_bytes=png_bytes,
         )
 
@@ -486,7 +508,7 @@ class LLMStrategy:
 
         # 5. Parse (row, col) waypoints from response
         try:
-            plan_summary, assignments = _parse_llm_response(
+            assignments = _parse_llm_response(
                 response_text, len(robots), map_shape
             )
         except Exception as e:
@@ -494,8 +516,6 @@ class LLMStrategy:
             self.initialized = True
             return waypoints
 
-        self.previous_plan_summary = plan_summary
-        print(f"[LLM] Plan summary: {plan_summary}")
         print(f"[LLM] Assignments:  {assignments}")
 
         for rid, wps in assignments.items():

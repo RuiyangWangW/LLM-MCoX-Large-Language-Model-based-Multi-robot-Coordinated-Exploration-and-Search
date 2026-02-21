@@ -84,7 +84,6 @@ class LLMStrategy(WaypointStrategy):
 
     Ablation study flags (all enabled by default):
     - use_neighbors: Include neighbor room information in LLM input (default: True)
-    - use_plan_summary: Include previous plan summary for consistency (default: True)
     - use_task_info: Include task information (target room type for search) (default: True)
 
     By default, all features are ENABLED for optimal performance.
@@ -97,17 +96,14 @@ class LLMStrategy(WaypointStrategy):
         mission: str = "explore",
         model: str = "gpt-4o",
         use_neighbors: bool = True,
-        use_plan_summary: bool = True,
         use_task_info: bool = True
     ):
         super().__init__(replan_interval)
         self.mission = mission
         self.model = model
-        self.previous_plan_summary: Optional[Dict] = None
 
         # Ablation flags
         self.use_neighbors = use_neighbors
-        self.use_plan_summary = use_plan_summary
         self.use_task_info = use_task_info
 
     def assign_waypoints(
@@ -134,17 +130,13 @@ class LLMStrategy(WaypointStrategy):
         if visualization_data is None:
             raise ValueError("LLMStrategy requires 'visualization_data' in kwargs")
 
-        # Add previous plan summary for consistency (if ablation allows)
-        if self.use_plan_summary and self.previous_plan_summary is not None:
-            llm_input = dict(llm_input)
-            llm_input["previous_plan_summary"] = self.previous_plan_summary
         fused = robots[0].local_map.copy()
         for robot in robots[1:]:
             fused = np.maximum(fused, robot.local_map)
         for robot in robots:
             robot.local_map = fused.copy()
             
-        waypoints, plan_summary = plan_with_llm(
+        waypoints = plan_with_llm(
             llm_input=llm_input,
             visualization_data=visualization_data,
             robots=robots,
@@ -155,16 +147,13 @@ class LLMStrategy(WaypointStrategy):
         )
 
         # Store plan summary for next round
-        self.previous_plan_summary = plan_summary
 
         print(f"[INFO] LLM assigned waypoints at step {step_count}: {waypoints}")
-        print(f"[INFO] Plan summary: {plan_summary}")
 
         return waypoints
 
     def reset(self):
         super().reset()
-        self.previous_plan_summary = None
 
 
 class LLMWaypointStrategy(WaypointStrategy):
@@ -175,18 +164,20 @@ class LLMWaypointStrategy(WaypointStrategy):
 
     Ablation flags:
     - use_vis:          Include aggregated map image in the LLM prompt.
-    - use_plan_summary: Include the previous round's plan summary.
+    - use_skeleton:     Include skeleton (medial axis) overlay in the map visualization.
+    - use_frontiers:    Include frontier cluster information (text + visualization markers).
     - use_prior_info:   Include a natural-language environment description.
     """
 
     def __init__(
         self,
-        T_coord: int = 20,
+        T_coord: int = 50,
         mission: str = "explore",
         model: str = "gpt-4o",
         max_cluster_distance: int = 10,
         use_vis: bool = True,
-        use_plan_summary: bool = True,
+        use_skeleton: bool = True,
+        use_frontiers: bool = True,
         use_prior_info: bool = True,
         prior_info=None,  # str | dict[str, str] | None
     ):
@@ -202,7 +193,8 @@ class LLMWaypointStrategy(WaypointStrategy):
             model=model,
             max_cluster_distance=max_cluster_distance,
             use_vis=use_vis,
-            use_plan_summary=use_plan_summary,
+            use_skeleton=use_skeleton,
+            use_frontiers=use_frontiers,
             use_prior_info=use_prior_info,
             prior_info=prior_info,
         )
@@ -243,7 +235,7 @@ class RacerWaypointStrategy(WaypointStrategy):
 
     def __init__(
         self,
-        L: int = 4,                 # HGrid levels
+        L: int = 5,                 # HGrid levels
         alpha_u: float = 0.7,       # Subdivision threshold
         delta_u: int = 5,           # Pruning threshold
         alpha_capacity: float = 0.55,  # Capacity factor for CVRP

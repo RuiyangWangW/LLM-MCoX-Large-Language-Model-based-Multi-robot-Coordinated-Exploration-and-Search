@@ -329,12 +329,18 @@ class GridMapSimulator:
         if self.waypoint_strategy.should_replan(self.step_count):
             try:
                 import time
-                coord_start = time.time()
-                wp_dict = self.waypoint_strategy.assign_waypoints(
-                    robots=self.robots,
-                    step_count=self.step_count,
-                )
-                self.coordination_times.append(time.time() - coord_start)
+                if self.step_count % self.waypoint_strategy.T_coord == 0:
+                    coord_start = time.time()
+                    wp_dict = self.waypoint_strategy.assign_waypoints(
+                        robots=self.robots,
+                        step_count=self.step_count,
+                    )
+                    self.coordination_times.append(time.time() - coord_start)
+                else:
+                    wp_dict = self.waypoint_strategy.assign_waypoints(
+                        robots=self.robots,
+                        step_count=self.step_count,
+                    )
 
                 for ridx, wps in wp_dict.items():
                     self.robots[ridx].set_waypoints(wps)
